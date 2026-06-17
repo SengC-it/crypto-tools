@@ -1,0 +1,31 @@
+{
+  "name": "crypto-signal-alert",
+  "version": "1.0.0",
+  "description": "Multi-engine crypto futures trading signal alert system with Gmail notification",
+  "private": true,
+  "scripts": {
+    "dev": "vercel dev",
+    "build": "tsc --noEmit",
+    "deploy": "vercel --prod",
+    "type-check": "tsc --noEmit",
+    "test:engines": "npx ts-node -T src/index.ts --test-only",
+    "test:mock": "npx ts-node -T src/test-mock.ts",
+    "test:full": "npx ts-node -T src/index.ts",
+    "start": "npx ts-node -T src/local-runner.ts"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "docx": "^9.7.1",
+    "nodemailer": "^6.9.14",
+    "technicalindicators": "^3.1.0",
+    "undici": "^6.27.0",
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/nodemailer": "^6.4.15",
+    "@vercel/node": "^3.2.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.0"
+  }
+}
