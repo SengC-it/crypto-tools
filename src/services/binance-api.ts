@@ -58,6 +58,22 @@ const TIMEFRAME_MAP: Record<Timeframe, string> = {
   '1d': '1d',
 };
 
+export interface ExchangeHealthCheck {
+  name: string;
+  ok: boolean;
+  duration_ms: number;
+  error?: string;
+  sample?: Record<string, number | string | boolean>;
+}
+
+export interface ExchangeHealthDiagnostics {
+  provider: 'binance_futures';
+  symbol: string;
+  ok: boolean;
+  checked_at: string;
+  checks: ExchangeHealthCheck[];
+}
+
 /** 简易请求缓存 */
 interface CacheEntry<T> { data: T; ts: number; }
 const cache = new Map<string, CacheEntry<any>>();
@@ -74,19 +90,46 @@ function setCache<T>(key: string, data: T): void {
   cache.set(key, { data, ts: Date.now() });
 }
 
-/** GET 请求 */
-async function get(url: string): Promise<any> {
-  ensureProxy();
-  const resp = await fetch(url, {
-    signal: AbortSignal.timeout(parseInt(process.env.EXCHANGE_TIMEOUT ?? '30000', 10)),
-  });
+type Fetcher = (url: string, init?: RequestInit) => Promise<Response>;
 
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => '');
-    throw new Error(`Binance API ${resp.status}: ${url} — ${text.slice(0, 200)}`);
+function retryDelayMs(attempt: number): number {
+  return Math.min(250 * attempt, 1_000);
+}
+
+export async function requestWithRetry(
+  url: string,
+  fetcher: Fetcher = fetch,
+  maxAttempts: number = parseInt(process.env.EXCHANGE_RETRIES ?? '3', 10),
+): Promise<any> {
+  ensureProxy();
+  const attempts = Math.max(1, maxAttempts);
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const resp = await fetcher(url, {
+        signal: AbortSignal.timeout(parseInt(process.env.EXCHANGE_TIMEOUT ?? '30000', 10)),
+      });
+
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => '');
+        throw new Error(`Binance API ${resp.status}: ${url} — ${text.slice(0, 200)}`);
+      }
+
+      return resp.json();
+    } catch (err: any) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      if (attempt >= attempts) break;
+      await new Promise(resolve => setTimeout(resolve, retryDelayMs(attempt)));
+    }
   }
 
-  return resp.json();
+  throw lastError ?? new Error(`Binance API request failed: ${url}`);
+}
+
+/** GET 请求 */
+async function get(url: string): Promise<any> {
+  return requestWithRetry(url);
 }
 
 // ============================================
@@ -94,6 +137,77 @@ async function get(url: string): Promise<any> {
 // ============================================
 
 export class BinanceFuturesService {
+  async diagnoseConnectivity(symbol: string = 'BTC/USDT'): Promise<ExchangeHealthDiagnostics> {
+    const resolvedSymbol = resolveSymbol(symbol);
+    const binanceSymbol = toBinanceSymbol(resolvedSymbol);
+
+    const endpoints: { name: string; url: string; sample: (data: any) => Record<string, number | string | boolean> }[] = [
+      {
+        name: 'futures_ping',
+        url: `${FUTURES_BASE}/fapi/v1/ping`,
+        sample: () => ({ reachable: true }),
+      },
+      {
+        name: 'klines_4h',
+        url: `${FUTURES_BASE}/fapi/v1/klines?symbol=${binanceSymbol}&interval=4h&limit=2`,
+        sample: (data) => ({
+          bars: Array.isArray(data) ? data.length : 0,
+          last_close: Array.isArray(data) && data.length > 0 ? Number(data[data.length - 1][4]) : 0,
+        }),
+      },
+      {
+        name: 'premium_index',
+        url: `${FUTURES_BASE}/fapi/v1/premiumIndex?symbol=${binanceSymbol}`,
+        sample: (data) => ({
+          funding_rate: Number(data?.lastFundingRate ?? 0),
+          mark_price: Number(data?.markPrice ?? 0),
+        }),
+      },
+      {
+        name: 'open_interest',
+        url: `${FUTURES_BASE}/fapi/v1/openInterest?symbol=${binanceSymbol}`,
+        sample: (data) => ({
+          open_interest: Number(data?.openInterest ?? 0),
+        }),
+      },
+      {
+        name: 'open_interest_hist',
+        url: `${FUTURES_BASE}/futures/data/openInterestHist?symbol=${binanceSymbol}&period=4h&limit=2`,
+        sample: (data) => ({
+          rows: Array.isArray(data) ? data.length : 0,
+        }),
+      },
+    ];
+
+    const checks = await Promise.all(endpoints.map(async (endpoint): Promise<ExchangeHealthCheck> => {
+      const started = Date.now();
+      try {
+        const data = await requestWithRetry(endpoint.url);
+        return {
+          name: endpoint.name,
+          ok: true,
+          duration_ms: Date.now() - started,
+          sample: endpoint.sample(data),
+        };
+      } catch (err: any) {
+        return {
+          name: endpoint.name,
+          ok: false,
+          duration_ms: Date.now() - started,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }));
+
+    return {
+      provider: 'binance_futures',
+      symbol,
+      ok: checks.every(check => check.ok),
+      checked_at: new Date().toISOString(),
+      checks,
+    };
+  }
+
   /** 获取合约 K 线数据 */
   async fetchOHLCV(
     symbol: string,
@@ -133,10 +247,12 @@ export class BinanceFuturesService {
     const context: MarketContext = { funding_rate: 0 };
 
     try {
-      // 并行获取资金费率和标记价格
-      const [premiumInfo, markPrice] = await Promise.all([
+      // 并行获取资金费率、标记价格和持仓量
+      const [premiumInfo, markPrice, openInterest, openInterestHist] = await Promise.all([
         get(`${FUTURES_BASE}/fapi/v1/premiumIndex?symbol=${binanceSymbol}`).catch(() => null),
         get(`${FUTURES_BASE}/fapi/v1/markPrice?symbol=${binanceSymbol}`).catch(() => null),
+        get(`${FUTURES_BASE}/fapi/v1/openInterest?symbol=${binanceSymbol}`).catch(() => null),
+        get(`${FUTURES_BASE}/futures/data/openInterestHist?symbol=${binanceSymbol}&period=4h&limit=2`).catch(() => null),
       ]);
 
       if (premiumInfo) {
@@ -148,6 +264,18 @@ export class BinanceFuturesService {
       if (markPrice) {
         context.mark_price = Number(markPrice.markPrice ?? 0) || context.mark_price;
         context.index_price = Number(markPrice.indexPrice ?? 0) || undefined;
+      }
+
+      if (openInterest) {
+        context.open_interest = Number(openInterest.openInterest ?? 0) || undefined;
+      }
+
+      if (Array.isArray(openInterestHist) && openInterestHist.length >= 2) {
+        const previous = Number(openInterestHist[openInterestHist.length - 2]?.sumOpenInterest ?? 0);
+        const current = Number(openInterestHist[openInterestHist.length - 1]?.sumOpenInterest ?? 0);
+        if (previous > 0 && current > 0) {
+          context.open_interest_change = (current - previous) / previous * 100;
+        }
       }
     } catch (err: any) {
       console.warn(`[Binance] fetchMarketContext partial failure for ${symbol}: ${err.message}`);

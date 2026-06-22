@@ -10,6 +10,8 @@
     "type-check": "tsc --noEmit",
     "test:engines": "npx ts-node -T src/index.ts --test-only",
     "test:mock": "npx ts-node -T src/test-mock.ts",
+    "test:optimization": "npx ts-node -T src/test-optimization.ts",
+    "test:exchange-health": "npx ts-node -T src/test-exchange-health.ts",
     "test:full": "npx ts-node -T src/index.ts",
     "start": "npx ts-node -T src/local-runner.ts"
   },
