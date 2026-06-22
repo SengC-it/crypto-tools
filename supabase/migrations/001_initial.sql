@@ -60,17 +60,14 @@ CREATE INDEX IF NOT EXISTS idx_signals_direction ON signals(direction);
 CREATE INDEX IF NOT EXISTS idx_signals_confidence ON signals(confidence DESC);
 CREATE INDEX IF NOT EXISTS idx_notification_log_signal_id ON notification_log(signal_id);
 
--- ===== 默认监控列表 =====
+-- ===== 默认监控列表 (V4优化: 仅4h时间框架, 增加5币种) =====
 INSERT INTO watchlist (symbol, timeframe) VALUES
-  ('BTC/USDT', '15m'),
   ('BTC/USDT', '4h'),
-  ('ETH/USDT', '15m'),
   ('ETH/USDT', '4h'),
-  ('SOL/USDT', '15m'),
-  ('BNB/USDT', '4h');
+  ('SOL/USDT', '4h'),
+  ('XRP/USDT', '4h'),
+  ('DOGE/USDT', '4h');
 
--- ===== 默认策略配置 =====
+-- ===== 默认策略配置 (V5优化: Trend-Only + TP16 + ADX过滤 + 移动止损) =====
 INSERT INTO strategy_configs (engine_type, enabled, weight, params) VALUES
-  ('trend', TRUE, 0.60, '{"ema_fast": 8, "ema_medium": 21, "ema_slow": 55, "rsi_period": 14, "rsi_oversold": 30, "rsi_overbought": 70, "atr_period": 14, "atr_sl_multiplier": 1.5, "atr_tp_multiplier": 3.0}'),
-  ('market_making', TRUE, 0.15, '{"funding_rate_threshold": 0.0001, "oi_change_threshold": 5.0}'),
-  ('grid_dca', TRUE, 0.25, '{"bb_period": 20, "bb_std": 2.0, "dca_levels": 3, "grid_spacing_pct": 2.0}');
+  ('trend', TRUE, 1.0, '{"ema_fast": 8, "ema_medium": 21, "ema_slow": 55, "rsi_period": 14, "rsi_oversold": 30, "rsi_overbought": 70, "atr_period": 14, "atr_sl_multiplier": 3.0, "atr_tp_multiplier": 16.0, "adx_period": 14, "adx_threshold": 20, "trailing_activation_pct": 2.0, "trailing_callback_pct": 1.5}');

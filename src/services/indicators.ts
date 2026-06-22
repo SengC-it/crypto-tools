@@ -25,6 +25,9 @@ export interface IndicatorSet {
     lower: number[];
   };
   atr: number[];
+  adx: number[];      // V5: ADX (Average Directional Index)
+  plusDi: number[];   // V5: +DI
+  minusDi: number[];  // V5: -DI
   stochastic: {
     k: number[];
     d: number[];
@@ -84,6 +87,9 @@ export class IndicatorsService {
       period: 14,
     });
 
+    // ADX (V5: 手动计算, technicalindicators不内置)
+    const adxResult = IndicatorsService.calculateADX(highs, lows, closes, 14);
+
     // Stochastic
     const stochResult = ti.Stochastic.calculate({
       high: highs,
@@ -119,6 +125,10 @@ export class IndicatorsService {
       },
       // ATR.calculate 直接返回 number[]
       atr: atr as number[],
+      // V5: ADX计算结果
+      adx: adxResult.adx,
+      plusDi: adxResult.plusDi,
+      minusDi: adxResult.minusDi,
       stochastic: {
         k: stochResult.map(v => v.k ?? 0),
         d: stochResult.map(v => v.d ?? 0),
@@ -172,6 +182,102 @@ export class IndicatorsService {
   /** 安全获取数组倒数第N个元素 */
   static nthLast(arr: number[], n: number, fallback: number = 0): number {
     return arr.length >= n ? arr[arr.length - n] : fallback;
+  }
+
+  /** 
+   * 计算ADX (Average Directional Index) - V5新增
+   * 
+   * ADX衡量趋势强度, 不区分方向:
+   *   ADX > 25: 强趋势
+   *   ADX 20-25: 中等趋势
+   *   ADX < 20: 震荡/无趋势 (应避免交易)
+   */
+  static calculateADX(
+    highs: number[],
+    lows: number[],
+    closes: number[],
+    period: number = 14,
+  ): { adx: number[]; plusDi: number[]; minusDi: number[] } {
+    if (highs.length < period * 2) {
+      return { adx: [], plusDi: [], minusDi: [] };
+    }
+
+    // Step 1: 计算 True Range 和 Directional Movement
+    const trList: number[] = [];
+    const plusDMList: number[] = [];
+    const minusDMList: number[] = [];
+
+    for (let i = 1; i < highs.length; i++) {
+      const hDiff = highs[i] - highs[i - 1];
+      const lDiff = lows[i - 1] - lows[i];
+
+      const plusDM = hDiff > lDiff && hDiff > 0 ? hDiff : 0;
+      const minusDM = lDiff > hDiff && lDiff > 0 ? lDiff : 0;
+
+      const tr = Math.max(
+        highs[i] - lows[i],
+        Math.abs(highs[i] - closes[i - 1]),
+        Math.abs(lows[i] - closes[i - 1]),
+      );
+
+      trList.push(tr);
+      plusDMList.push(plusDM);
+      minusDMList.push(minusDM);
+    }
+
+    // Step 2: Wilder平滑 (首期用SMA, 之后用EMA: prev * (period-1)/period + curr * 1/period)
+    function wilderSmooth(data: number[], p: number): number[] {
+      const result: number[] = [];
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) {
+        if (i < p) {
+          sum += data[i];
+          if (i === p - 1) result.push(sum);
+        } else {
+          const smoothed = result[result.length - 1] * (p - 1) / p + data[i];
+          result.push(smoothed);
+        }
+      }
+      return result;
+    }
+
+    const smoothTR = wilderSmooth(trList, period);
+    const smoothPlusDM = wilderSmooth(plusDMList, period);
+    const smoothMinusDM = wilderSmooth(minusDMList, period);
+
+    // Step 3: 计算 +DI 和 -DI
+    const plusDi: number[] = [];
+    const minusDi: number[] = [];
+    const dx: number[] = [];
+
+    for (let i = 0; i < smoothTR.length; i++) {
+      const pdi = smoothTR[i] > 0 ? (smoothPlusDM[i] / smoothTR[i]) * 100 : 0;
+      const mdi = smoothTR[i] > 0 ? (smoothMinusDM[i] / smoothTR[i]) * 100 : 0;
+
+      plusDi.push(pdi);
+      minusDi.push(mdi);
+
+      const diSum = pdi + mdi;
+      const dxVal = diSum > 0 ? (Math.abs(pdi - mdi) / diSum) * 100 : 0;
+      dx.push(dxVal);
+    }
+
+    // Step 4: ADX = Wilder平滑的DX
+    const adx: number[] = [];
+    if (dx.length >= period) {
+      let adxSum = 0;
+      for (let i = 0; i < period; i++) {
+        adxSum += dx[i];
+      }
+      adx.push(adxSum / period);
+
+      for (let i = period; i < dx.length; i++) {
+        const adxVal = (adx[adx.length - 1] * (period - 1) + dx[i]) / period;
+        adx.push(adxVal);
+      }
+    }
+
+    return { adx, plusDi, minusDi };
   }
 
   /** 检测金叉/死叉 */

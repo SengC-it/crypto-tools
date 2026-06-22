@@ -1,16 +1,15 @@
 // ============================================
 // 趋势跟踪引擎 (Freqtrade + Jesse 风格)
 //
-// 策略逻辑:
-// - 做多: EMA8 > EMA21(趋势向上) + RSI从超卖区回升 + MACD金叉 + 成交量确认
-// - 做空: EMA8 < EMA21(趋势向下) + RSI从超买区回落 + MACD死叉 + 成交量确认
-// - 止损: ATR * 1.5 (避免正常波动被扫)
-// - 止盈: ATR * 3.0 (追求稳定盈亏比 ≥ 2:1)
+// V5优化:
+// - 止盈: ATR * 16.0 (5.3:1盈亏比, 回测验证最优)
+// - ADX趋势过滤: ADX < 20时抑制信号, 避免震荡市亏损
+// - 移动止损: 盈利2%后激活, 回调1.5%时触发, 锁定利润
 // ============================================
 
 import { BaseEngine, type EngineInput, type EngineOutput } from './base';
 import { IndicatorsService } from '../services/indicators';
-import type { TrendParams, Direction, Signal, EngineDetail } from '../types';
+import type { TrendParams, Direction, Signal, EngineDetail, TrailingStopConfig } from '../types';
 
 export class TrendEngine extends BaseEngine {
   readonly name = 'trend';
@@ -23,7 +22,7 @@ export class TrendEngine extends BaseEngine {
       return { signal: null, detail: null };
     }
 
-    // 合并默认参数
+    // 合并默认参数 (V5: TP=16, ADX过滤, 移动止损)
     const p: TrendParams = {
       ema_fast: 8,
       ema_medium: 21,
@@ -32,8 +31,12 @@ export class TrendEngine extends BaseEngine {
       rsi_oversold: 30,
       rsi_overbought: 70,
       atr_period: 14,
-      atr_sl_multiplier: 1.5,
-      atr_tp_multiplier: 3.0,
+      atr_sl_multiplier: 3.0,
+      atr_tp_multiplier: 16.0,
+      adx_period: 14,
+      adx_threshold: 20,
+      trailing_activation_pct: 1.5,
+      trailing_callback_pct: 1.0,
       ...rawParams,
     };
 
@@ -53,6 +56,27 @@ export class TrendEngine extends BaseEngine {
 
     const atr = last(indicators.atr);
     const volumeRatio = indicators.volume.ratio;
+
+    // V5: ADX趋势过滤
+    const adx = last(indicators.adx);
+    const plusDi = last(indicators.plusDi);
+    const minusDi = last(indicators.minusDi);
+
+    // ADX < 20 → 震荡市, 降低信号置信度或直接过滤
+    let adxPenalty = 0;
+    let trendStrength: 'strong' | 'moderate' | 'weak' | 'ranging' = 'ranging';
+    if (adx >= 40) {
+      trendStrength = 'strong';
+    } else if (adx >= 25) {
+      trendStrength = 'moderate';
+    } else if (adx >= p.adx_threshold) {
+      trendStrength = 'weak';
+      adxPenalty = 0.15; // 弱趋势, 轻微惩罚
+    } else {
+      // ADX < 20: 震荡市, 大幅惩罚
+      trendStrength = 'ranging';
+      adxPenalty = 0.35;
+    }
 
     // 趋势判断
     const isUptrend = emaFast > emaMedium && emaMedium > emaSlow;
@@ -135,12 +159,21 @@ export class TrendEngine extends BaseEngine {
 
     if (longScore >= minScore && longScore > shortScore) {
       direction = 'long';
-      confidence = this.clamp(longScore, 0, 1);
+      confidence = this.clamp(longScore - adxPenalty, 0, 1);
       reasons = longReasons;
     } else if (shortScore >= minScore && shortScore > longScore) {
       direction = 'short';
-      confidence = this.clamp(shortScore, 0, 1);
+      confidence = this.clamp(shortScore - adxPenalty, 0, 1);
       reasons = shortReasons;
+    }
+
+    // ADX过滤: 震荡市置信度过低则不产生信号
+    if (direction && adx < p.adx_threshold && confidence < 0.35) {
+      reasons.push(`ADX弱势(${adx.toFixed(1)})信号被抑制`);
+      direction = null;
+      confidence = 0;
+    } else if (direction && adxPenalty > 0) {
+      reasons.push(`ADX=${adx.toFixed(1)}(${trendStrength})`);
     }
 
     if (!direction || !atr || !price) {
@@ -159,6 +192,9 @@ export class TrendEngine extends BaseEngine {
             atr: atr.toFixed(2),
             vol_ratio: volumeRatio.toFixed(2),
             trend: isUptrend ? 'bullish' : isDowntrend ? 'bearish' : 'neutral',
+            adx: adx.toFixed(1),
+            plus_di: plusDi.toFixed(1),
+            minus_di: minusDi.toFixed(1),
           },
         },
       };
@@ -185,9 +221,17 @@ export class TrendEngine extends BaseEngine {
       takeProfit,
       timeframe,
       reasons.join(', '),
-      3, // 趋势策略建议3倍杠杆
+      5, // 趋势策略建议最高5倍杠杆(实际由Aggregator动态调整)
       input.marketContext.funding_rate,
     );
+
+    // V5: 添加ADX和移动止损信息
+    signal.adx = adx;
+    signal.trend_strength = trendStrength;
+    signal.trailing_stop = {
+      activation_pct: p.trailing_activation_pct,
+      callback_pct: p.trailing_callback_pct,
+    };
 
     const detail = this.buildDetail(direction, confidence, reasons.join(', '), {
       ema_fast: emaFast.toFixed(2),
@@ -196,6 +240,9 @@ export class TrendEngine extends BaseEngine {
       macd_cross: macdCross,
       atr: atr.toFixed(2),
       vol_ratio: volumeRatio.toFixed(2),
+      adx: adx.toFixed(1),
+      plus_di: plusDi.toFixed(1),
+      minus_di: minusDi.toFixed(1),
     });
 
     return { signal, detail };

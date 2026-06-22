@@ -9,13 +9,64 @@
 // 5. 保存信号到Supabase
 // 6. 通过Gmail发送通知
 // 7. 记录通知日志
+//
+// 降级模式: 当 Supabase 不可用时,
+// 使用本地硬编码的监控列表和策略配置继续运行
 // ============================================
 
 import { getExchangeService } from '../services/exchange';
 import { getDatabaseService } from '../services/database';
 import { getNotificationService } from '../services/notification';
 import { AggregatorEngine } from '../engines/aggregator';
-import type { RunResult, StrategyConfig, Timeframe } from '../types';
+import type { RunResult, StrategyConfig, Timeframe, WatchlistItem } from '../types';
+
+// ====== 降级模式: 本地默认配置 (V5优化: Trend-Only + TP16 + ADX + 移动止损) ======
+const FALLBACK_WATCHLIST: WatchlistItem[] = [
+  { symbol: 'BTC/USDT', timeframe: '4h', enabled: true },
+  { symbol: 'ETH/USDT', timeframe: '4h', enabled: true },
+  { symbol: 'SOL/USDT', timeframe: '4h', enabled: true },
+  { symbol: 'XRP/USDT', timeframe: '4h', enabled: true },
+  { symbol: 'DOGE/USDT', timeframe: '4h', enabled: true },
+];
+
+const FALLBACK_STRATEGY_CONFIGS: StrategyConfig[] = [
+  {
+    engine_type: 'trend',
+    enabled: true,
+    weight: 1.0,  // V5: Trend-Only, 权重100%
+    params: {
+      ema_fast: 8, ema_medium: 21, ema_slow: 55,
+      rsi_period: 14, rsi_oversold: 30, rsi_overbought: 70,
+      atr_period: 14, atr_sl_multiplier: 3.0, atr_tp_multiplier: 16.0,
+      adx_period: 14, adx_threshold: 20,
+      trailing_activation_pct: 1.5, trailing_callback_pct: 1.0,
+    },
+  },
+  // V5: Grid+MM引擎已禁用 (回测证明净亏损: MM -62.19%, Grid -275.39%)
+  // {
+  //   engine_type: 'market_making',
+  //   enabled: false,
+  //   weight: 0.0,
+  //   params: {},
+  // },
+  // {
+  //   engine_type: 'grid_dca',
+  //   enabled: false,
+  //   weight: 0.0,
+  //   params: {},
+  // },
+];
+
+/** 尝试初始化数据库服务, 失败则返回 null (降级模式) */
+function tryInitDatabase(): { db: any; degraded: boolean } {
+  try {
+    const db = getDatabaseService();
+    return { db, degraded: false };
+  } catch (err: any) {
+    console.warn(`[Runner] Database init failed (${err.message}), switching to degraded mode`);
+    return { db: null, degraded: true };
+  }
+}
 
 export class Runner {
   /**
@@ -26,26 +77,55 @@ export class Runner {
     const errors: string[] = [];
     let signalsGenerated = 0;
     let notificationsSent = 0;
+    let degradedMode = false;
 
     const details: RunResult['details'] = [];
 
     try {
       // 1. 初始化服务
       const exchange = getExchangeService();
-      const db = getDatabaseService();
-      const notifier = getNotificationService();
+      const { db, degraded } = tryInitDatabase();
+      degradedMode = degraded;
 
-      // 2. 加载配置
-      const [watchlist, strategyConfigs] = await Promise.all([
-        db.getWatchlist().catch((err) => {
-          errors.push(`Watchlist加载失败: ${err.message}`);
-          return [];
-        }),
-        db.getStrategyConfigs().catch((err) => {
-          errors.push(`策略配置加载失败: ${err.message}`);
-          return [] as StrategyConfig[];
-        }),
-      ]);
+      let notifier: ReturnType<typeof getNotificationService> | null = null;
+      try {
+        notifier = getNotificationService();
+      } catch (err: any) {
+        console.warn(`[Runner] Notification init failed (${err.message}), emails will be skipped`);
+      }
+
+      // 2. 加载配置 (降级模式使用本地默认)
+      let watchlist: WatchlistItem[];
+      let strategyConfigs: StrategyConfig[];
+
+      if (degraded || !db) {
+        console.warn('[Runner] Running in DEGRADED mode - using local fallback configs');
+        watchlist = FALLBACK_WATCHLIST;
+        strategyConfigs = FALLBACK_STRATEGY_CONFIGS;
+      } else {
+        const [wlResult, scResult] = await Promise.all([
+          db.getWatchlist().catch((err: any) => {
+            errors.push(`Watchlist加载失败: ${err.message}`);
+            return [] as WatchlistItem[];
+          }),
+          db.getStrategyConfigs().catch((err: any) => {
+            errors.push(`策略配置加载失败: ${err.message}`);
+            return [] as StrategyConfig[];
+          }),
+        ]);
+        watchlist = wlResult;
+        strategyConfigs = scResult;
+
+        // 如果DB返回空结果, 降级到本地默认
+        if (watchlist.length === 0) {
+          console.warn('[Runner] DB watchlist empty, falling back to local defaults');
+          watchlist = FALLBACK_WATCHLIST;
+        }
+        if (strategyConfigs.length === 0) {
+          console.warn('[Runner] DB strategy configs empty, falling back to local defaults');
+          strategyConfigs = FALLBACK_STRATEGY_CONFIGS;
+        }
+      }
 
       if (watchlist.length === 0) {
         errors.push('监控列表为空');
@@ -102,13 +182,16 @@ export class Runner {
 
           const signal = result.finalSignal;
 
-          // 5e. 冷却期检查
-          const cooldownHours = parseInt(process.env.SIGNAL_COOLDOWN_HOURS ?? '4', 10);
-          const inCooldown = await db.isSignalInCooldown(
-            signal.symbol,
-            signal.direction,
-            cooldownHours,
-          );
+          // 5e. 冷却期检查 (降级模式下跳过)
+          let inCooldown = false;
+          if (db) {
+            const cooldownHours = parseInt(process.env.SIGNAL_COOLDOWN_HOURS ?? '1', 10);
+            inCooldown = await db.isSignalInCooldown(
+              signal.symbol,
+              signal.direction,
+              cooldownHours,
+            );
+          }
 
           if (inCooldown) {
             console.log(`[Runner] ${signal.symbol} ${signal.direction} 信号在冷却期内，跳过`);
@@ -116,27 +199,39 @@ export class Runner {
           }
 
           // 5f. 置信度检查
-          const minConfidence = parseFloat(process.env.MIN_CONFIDENCE ?? '0.55');
+          const minConfidence = parseFloat(process.env.MIN_CONFIDENCE ?? '0.40');
           if (signal.confidence < minConfidence) {
             console.log(`[Runner] ${signal.symbol} 置信度${(signal.confidence * 100).toFixed(0)}%低于阈值${(minConfidence * 100).toFixed(0)}%，跳过`);
             continue;
           }
 
-          // 5g. 保存信号
-          const savedSignal = await db.saveSignal(signal);
+          // 5g. 保存信号 (降级模式下跳过)
+          let savedSignal: any = { id: `local-${Date.now()}` };
+          if (db) {
+            savedSignal = await db.saveSignal(signal);
+          } else {
+            console.log(`[Runner] DEGRADED: Signal not saved to DB - ${signal.symbol} ${signal.direction}`);
+          }
           signalsGenerated++;
 
-          // 5h. 发送Gmail通知
-          const sent = await notifier.sendSignalEmail(signal);
+          // 5h. 发送Gmail通知 (如果可用)
+          let sent = false;
+          if (notifier) {
+            sent = await notifier.sendSignalEmail(signal);
+          } else {
+            console.log(`[Runner] DEGRADED: No email notification - ${signal.symbol} ${signal.direction}`);
+          }
 
-          // 5i. 记录通知日志
-          await db.logNotification({
-            signal_id: savedSignal.id ?? '',
-            channel: 'gmail',
-            sent_at: new Date().toISOString(),
-            status: sent ? 'sent' : 'failed',
-            error: sent ? undefined : 'Gmail send failed',
-          });
+          // 5i. 记录通知日志 (降级模式下跳过)
+          if (db) {
+            await db.logNotification({
+              signal_id: savedSignal.id ?? '',
+              channel: 'gmail',
+              sent_at: new Date().toISOString(),
+              status: sent ? 'sent' : 'failed',
+              error: sent ? undefined : 'Gmail send failed',
+            });
+          }
 
           if (sent) {
             notificationsSent++;
@@ -152,6 +247,10 @@ export class Runner {
     } catch (err: any) {
       errors.push(`Runner fatal error: ${err.message}`);
       console.error('[Runner] Fatal error:', err);
+    }
+
+    if (degradedMode) {
+      errors.push('[DEGRADED] Supabase unavailable, using local fallback configs');
     }
 
     return this.buildResult(startTime, signalsGenerated, notificationsSent, errors, details);

@@ -6,10 +6,14 @@
 //   npx ts-node src/index.ts --test-only  # 仅测试交易所数据+引擎 (无需 Supabase/Gmail)
 // ============================================
 
+import { loadEnv } from './services/env';
 import { Runner } from './runner/index';
 import { getExchangeService } from './services/exchange';
 import { AggregatorEngine } from './engines/aggregator';
 import type { StrategyConfig, Timeframe } from './types';
+
+// 加载 .env (确保代理等环境变量在所有模式下均可用)
+loadEnv();
 
 const isTestOnly = process.argv.includes('--test-only');
 
@@ -17,36 +21,21 @@ async function testEnginesOnly() {
   console.log('=== 纯引擎测试模式 (无需 Supabase/Gmail) ===\n');
 
   const exchange = getExchangeService();
-  const symbols = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT'];
-  const timeframes: Timeframe[] = ['15m', '4h'];
+  const symbols = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'XRP/USDT', 'DOGE/USDT'];
+  const timeframes: Timeframe[] = ['4h'];
 
-  // 默认策略配置 (与数据库 seed 一致)
+  // V5策略配置 (Trend-Only + TP16 + ADX + 移动止损)
   const strategyConfigs: StrategyConfig[] = [
     {
       engine_type: 'trend',
       enabled: true,
-      weight: 0.40,
+      weight: 1.0,
       params: {
         ema_fast: 8, ema_medium: 21, ema_slow: 55,
         rsi_period: 14, rsi_oversold: 30, rsi_overbought: 70,
-        atr_period: 14, atr_sl_multiplier: 1.5, atr_tp_multiplier: 3.0,
-      },
-    },
-    {
-      engine_type: 'market_making',
-      enabled: true,
-      weight: 0.30,
-      params: {
-        funding_rate_threshold: 0.0003,
-        oi_change_threshold: 5.0,
-      },
-    },
-    {
-      engine_type: 'grid_dca',
-      enabled: true,
-      weight: 0.30,
-      params: {
-        bb_period: 20, bb_std: 2.0, dca_levels: 3, grid_spacing_pct: 2.0,
+        atr_period: 14, atr_sl_multiplier: 3.0, atr_tp_multiplier: 16.0,
+        adx_period: 14, adx_threshold: 20,
+        trailing_activation_pct: 1.5, trailing_callback_pct: 1.0,
       },
     },
   ];

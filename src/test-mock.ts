@@ -11,6 +11,7 @@ import { AggregatorEngine } from './engines/aggregator';
 import type { Candle, StrategyConfig, MarketContext, Timeframe } from './types';
 
 // ====== 生成模拟K线数据 (更真实的价格走势) ======
+// 添加均值回归机制，限制单根K线变化幅度，防止 RSI 极值 (0.0 / 100.0)
 function generateMockCandles(
   basePrice: number,
   count: number,
@@ -21,23 +22,36 @@ function generateMockCandles(
   const now = Date.now();
   const interval = 15 * 60 * 1000; // 15分钟
 
+  // 均值回归参数
+  const meanReversionStrength = 0.003; // 向基准价回归的力度
+  const maxSingleChange = 0.008; // 单根K线最大变化 ±0.8%
+  const driftPerCandle = trend === 'up' ? 0.0008 : trend === 'down' ? -0.0008 : 0;
+
   for (let i = 0; i < count; i++) {
     const timestamp = now - (count - i) * interval;
 
-    // 趋势偏移 + 随机噪声
-    // 更强的趋势偏移来模拟真实的趋势行情
-    const trendDrift = trend === 'up' ? 0.002 : trend === 'down' ? -0.002 : 0;
-    const noise = (Math.random() - 0.5) * 0.003; // ±0.15% 随机波动
-    const change = trendDrift + noise;
+    // 趋势偏移 + 随机噪声 + 均值回归
+    const noise = (Math.random() - 0.5) * 0.004; // ±0.2% 随机波动
+    const deviation = (price - basePrice) / basePrice;
+    const meanReversion = -deviation * meanReversionStrength * (trend === 'range' ? 3 : 1);
+    let change = driftPerCandle + noise + meanReversion;
+
+    // 限制单根K线变化幅度
+    change = Math.max(-maxSingleChange, Math.min(maxSingleChange, change));
 
     const open = price;
     const close = price * (1 + change);
-    const high = Math.max(open, close) * (1 + Math.random() * 0.002);
-    const low = Math.min(open, close) * (1 - Math.random() * 0.002);
+    const high = Math.max(open, close) * (1 + Math.random() * 0.003);
+    const low = Math.min(open, close) * (1 - Math.random() * 0.003);
     const volume = 10000 + Math.random() * 50000;
 
     candles.push({ timestamp, open, high, low, close, volume });
     price = close;
+
+    // 均值回归重置：价格偏离基准超过5%时，向基准方向修正
+    if (Math.abs(price - basePrice) / basePrice > 0.05) {
+      price = price * 0.95 + basePrice * 0.05;
+    }
   }
 
   return candles;
@@ -49,29 +63,19 @@ async function runTest() {
   console.log('  模拟数据端到端测试');
   console.log('========================================\n');
 
-  // 策略配置
+  // V5策略配置 (Trend-Only + TP16 + ADX + 移动止损)
   const strategyConfigs: StrategyConfig[] = [
     {
       engine_type: 'trend',
       enabled: true,
-      weight: 0.40,
+      weight: 1.0,
       params: {
         ema_fast: 8, ema_medium: 21, ema_slow: 55,
         rsi_period: 14, rsi_oversold: 30, rsi_overbought: 70,
-        atr_period: 14, atr_sl_multiplier: 1.5, atr_tp_multiplier: 3.0,
+        atr_period: 14, atr_sl_multiplier: 3.0, atr_tp_multiplier: 16.0,
+        adx_period: 14, adx_threshold: 20,
+        trailing_activation_pct: 1.5, trailing_callback_pct: 1.0,
       },
-    },
-    {
-      engine_type: 'market_making',
-      enabled: true,
-      weight: 0.30,
-      params: { funding_rate_threshold: 0.0003, oi_change_threshold: 5.0 },
-    },
-    {
-      engine_type: 'grid_dca',
-      enabled: true,
-      weight: 0.30,
-      params: { bb_period: 20, bb_std: 2.0, dca_levels: 3, grid_spacing_pct: 2.0 },
     },
   ];
 
@@ -113,7 +117,7 @@ async function runTest() {
     try {
       const result = await aggregator.evaluate(
         scenario.symbol,
-        '15m' as Timeframe,
+        '4h' as Timeframe,
         candles,
         marketContext,
       );

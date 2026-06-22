@@ -35,6 +35,11 @@ export interface Signal {
   engine_count: number;
   engine_details: Record<string, EngineDetail>;
   created_at?: string;
+  // V5: ADX趋势过滤
+  adx?: number;             // 当前ADX值
+  trend_strength?: 'strong' | 'moderate' | 'weak' | 'ranging'; // 趋势强度
+  // V5: 移动止损(Trailing Stop)
+  trailing_stop?: TrailingStopConfig;
 }
 
 /** 单个引擎的详细信息 */
@@ -87,7 +92,7 @@ export interface NotificationLog {
 
 /** 各引擎参数 */
 
-/** 趋势引擎参数 (Freqtrade + Jesse 风格) */
+/** 趋势引擎参数 (Freqtrade + Jesse 风格, V5优化: ADX过滤+移动止损) */
 export interface TrendParams {
   ema_fast: number;          // 快线周期 (默认8)
   ema_medium: number;        // 中线周期 (默认21)
@@ -96,8 +101,12 @@ export interface TrendParams {
   rsi_oversold: number;      // RSI超卖阈值 (默认30)
   rsi_overbought: number;    // RSI超买阈值 (默认70)
   atr_period: number;        // ATR周期 (默认14)
-  atr_sl_multiplier: number; // 止损ATR倍数 (默认1.5)
-  atr_tp_multiplier: number; // 止盈ATR倍数 (默认3.0)
+  atr_sl_multiplier: number; // 止损ATR倍数 (默认3.0)
+  atr_tp_multiplier: number; // 止盈ATR倍数 (默认16.0, V5从12.0提升)
+  adx_period: number;        // ADX周期 (默认14)
+  adx_threshold: number;     // ADX趋势过滤阈值 (默认20, 低于此为震荡市)
+  trailing_activation_pct: number;  // 移动止损激活% (默认2.0)
+  trailing_callback_pct: number;    // 移动止损回调% (默认1.5)
 }
 
 /** 做市引擎参数 (Hummingbot 风格) */
@@ -112,6 +121,13 @@ export interface GridDCAParams {
   bb_std: number;            // 布林带标准差 (默认2.0)
   dca_levels: number;        // DCA分批次数 (默认3)
   grid_spacing_pct: number;  // 网格间距% (默认2.0)
+}
+
+/** 移动止损配置 (V5) */
+export interface TrailingStopConfig {
+  activation_pct: number;   // 激活条件: 价格朝有利方向移动百分比 (默认2.0%)
+  callback_pct: number;     // 回调幅度: 从最高/低价回调百分比时触发止损 (默认1.5%)
+  current_trail?: number;   // 当前移动止损价位 (运行时计算)
 }
 
 /** 运行结果 */

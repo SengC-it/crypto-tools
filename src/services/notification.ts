@@ -1,9 +1,42 @@
 // ============================================
 // Notification Service - Gmail 邮件推送
+//
+// 支持 SOCKS5 代理 (SMTP_PROXY / HTTPS_PROXY)
+// 在国内环境中 Gmail SMTP 端口 465 被 GFW 阻断,
+// 可通过 SMTP_PROXY=socks5://127.0.0.1:10808 走代理
 // ============================================
 
 import nodemailer from 'nodemailer';
 import type { Signal } from '../types';
+
+// socks-proxy-agent 使用动态 require 避免 moduleResolution 兼容问题
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+let SocksProxyAgent: any;
+try {
+  SocksProxyAgent = require('socks-proxy-agent').SocksProxyAgent;
+} catch {
+  SocksProxyAgent = null;
+}
+
+/** 从 SMTP_PROXY 或 HTTPS_PROXY 推导 SOCKS5 代理 URL */
+function resolveSmtpProxy(): string | null {
+  // 1. 优先使用 SMTP_PROXY
+  const smtpProxy = process.env.SMTP_PROXY;
+  if (smtpProxy) return smtpProxy;
+
+  // 2. 从 HTTPS_PROXY 推导 (socks5 → 直接用, http → 尝试转换为同端口 socks5)
+  const httpsProxy = process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
+  if (!httpsProxy) return null;
+
+  // 已经是 socks5 协议直接用
+  if (httpsProxy.startsWith('socks5://') || httpsProxy.startsWith('socks5h://')) {
+    return httpsProxy;
+  }
+
+  // http/https 代理无法直接用于 SMTP, 提示用户配置 SMTP_PROXY
+  console.warn('[Notification] HTTPS_PROXY is HTTP protocol, cannot use for SMTP. Please set SMTP_PROXY=socks5://host:port');
+  return null;
+}
 
 export class NotificationService {
   private transporter: nodemailer.Transporter;
@@ -21,14 +54,39 @@ export class NotificationService {
 
     this.fromEmail = user;
 
-    this.transporter = nodemailer.createTransport({
+    // 检测是否需要代理
+    const proxyUrl = resolveSmtpProxy();
+    let transportOptions: any = {
       service: 'gmail',
       auth: {
         type: 'login',
         user,
         pass,
       },
-    });
+    };
+
+    if (proxyUrl) {
+      try {
+        const agent = new SocksProxyAgent(proxyUrl);
+        transportOptions = {
+          host: 'smtp.gmail.com',
+          port: 465,
+          secure: true,
+          auth: {
+            type: 'login',
+            user,
+            pass,
+          },
+          agent, // nodemailer 支持 agent 选项用于底层连接
+        };
+        console.log(`[Notification] Using SOCKS5 proxy: ${proxyUrl.replace(/\/\/[^@]+@/, '//***@')}`);
+      } catch (err: any) {
+        console.error(`[Notification] Failed to create SOCKS5 proxy agent: ${err.message}`);
+        // 降级到直连
+      }
+    }
+
+    this.transporter = nodemailer.createTransport(transportOptions);
   }
 
   /** 发送交易信号邮件 */
@@ -118,7 +176,7 @@ export class NotificationService {
 
     try {
       const result = await this.transporter.sendMail({
-        from: `"Crypto Signal" <${this.fromEmail}>`,
+        from: `"Crypto Tools" <${this.fromEmail}>`,
         to: this.toEmail,
         subject,
         html,

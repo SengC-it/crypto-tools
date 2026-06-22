@@ -17,6 +17,7 @@
     "@supabase/supabase-js": "^2.45.0",
     "docx": "^9.7.1",
     "nodemailer": "^6.9.14",
+    "socks-proxy-agent": "^10.1.0",
     "technicalindicators": "^3.1.0",
     "undici": "^6.27.0",
     "ws": "^8.21.0"

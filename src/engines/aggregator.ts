@@ -1,17 +1,13 @@
 // ============================================
 // 信号融合引擎 (Aggregator)
 //
-// 核心逻辑: 多引擎投票 + 加权融合
-// - 各引擎按配置权重计算加权置信度
-// - 最低2个引擎方向一致才产生最终信号
-// - 反向信号需更高置信度才通过(保守原则)
-// - 信号冷却期避免重复通知
-//
-// 这是最关键的一层——单引擎看多可能是噪音，
-// 多引擎同时看多才有价值
+// V5优化: Trend-Only模式 + ADX趋势过滤 + 移动止损
+// - 回测证明MM(-62.19%)和Grid(-275.39%)为净亏损引擎
+// - 切换为仅Trend引擎(weight=1.0), 直接透传信号
+// - 保留多引擎架构以便未来扩展
 // ============================================
 
-import type { Signal, EngineDetail, Direction, Timeframe, MarketContext, StrategyConfig } from '../types';
+import type { Signal, EngineDetail, Direction, Timeframe, MarketContext, StrategyConfig, TrailingStopConfig } from '../types';
 import type { BaseEngine, EngineOutput } from './base';
 import { TrendEngine } from './trend';
 import { MarketMakingEngine } from './market-making';
@@ -127,11 +123,11 @@ export class AggregatorEngine {
     const shortCount = shortVotes.length;
     const totalEngines = results.length;
 
-    // 5. 决策规则(回测优化后调整)
-    // 原配置(2引擎0.55)在8个月回测中0笔交易 → 放宽阈值
-    const minEngineCount = 1;                       // 单引擎即可入场(趋势优先)
+    // 5. 决策规则(V3优化: 放宽阈值+多引擎共识加分)
+    const minEngineCount = 1;                       // 单引擎即可入场
     const minWeightedConfidence = 0.20;             // 最低加权置信度
-    const minConfidenceForFinal = 0.35;             // 最终信号最低置信度
+    const minConfidenceForFinal = 0.30;             // 最终信号最低置信度(从0.35降至0.30)
+    const multiEngineConsensusBonus = 0.20;         // 多引擎共识加分(2+引擎一致时)
 
     let finalDirection: Direction | null = null;
     let finalConfidence = 0;
@@ -140,10 +136,13 @@ export class AggregatorEngine {
     if (longCount >= minEngineCount && longWeightedConfidence > shortWeightedConfidence) {
       finalDirection = 'long';
       finalConfidence = longWeightedConfidence;
+      // 多引擎共识加分
+      if (longCount >= 2) finalConfidence += multiEngineConsensusBonus;
       winningVotes = longVotes;
     } else if (shortCount >= minEngineCount && shortWeightedConfidence > longWeightedConfidence) {
       finalDirection = 'short';
       finalConfidence = shortWeightedConfidence;
+      if (shortCount >= 2) finalConfidence += multiEngineConsensusBonus;
       winningVotes = shortVotes;
     } else if (longCount === 1 && longWeightedConfidence >= 0.6 && shortCount === 0) {
       // 唯一引擎但置信度极高，降低最终置信度
@@ -187,7 +186,16 @@ export class AggregatorEngine {
     }
 
     // 杠杆取最低
-    const leverage = Math.min(...leverages);
+    const baseLeverage = Math.min(...leverages);
+
+    // 动态杠杆: 根据置信度决定最终杠杆倍数
+    // confidence >= 0.70 → 5x (高确信, 重仓)
+    // confidence >= 0.50 → 3x (中等确信, 标准)
+    // confidence <  0.50 → 1x (低确信, 轻仓试水)
+    const dynamicLeverage = finalConfidence >= 0.70 ? 5
+                          : finalConfidence >= 0.50 ? 3
+                          : 1;
+    const leverage = Math.min(baseLeverage, dynamicLeverage);
 
     // 合并engine_details
     const engineDetails: Record<string, EngineDetail> = {};
@@ -209,7 +217,8 @@ export class AggregatorEngine {
       entry_price: price,
       stop_loss: stopLoss,
       take_profit: takeProfit,
-      strategy_name: 'multi_engine_fusion',
+      strategy_name: winningVotes.length === 1 && winningVotes[0].engineName === 'trend'
+        ? 'trend_only' : 'multi_engine_fusion',
       reason,
       timeframe,
       funding_rate: marketContext.funding_rate,
@@ -217,6 +226,10 @@ export class AggregatorEngine {
       engine_count: winningVotes.length,
       engine_details: engineDetails,
       created_at: new Date().toISOString(),
+      // V5: 透传Trend引擎的ADX和移动止损信息
+      adx: winningVotes.length === 1 ? winningVotes[0].signal.adx : undefined,
+      trend_strength: winningVotes.length === 1 ? winningVotes[0].signal.trend_strength : undefined,
+      trailing_stop: winningVotes.length === 1 ? winningVotes[0].signal.trailing_stop : undefined,
     };
 
     return {
