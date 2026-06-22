@@ -1,0 +1,17 @@
+name: Signal Check
+
+on:
+  schedule:
+    # Every 4 hours: 00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC
+    - cron: '0 0,4,8,12,16,20 * * *'
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Vercel Cron
+        run: |
+          curl -s -f "${{ secrets.VERCEL_CRON_URL }}" || echo "WARN: Cron trigger failed"
+        env:
+          VERCEL_CRON_URL: ${{ secrets.VERCEL_CRON_URL }}
