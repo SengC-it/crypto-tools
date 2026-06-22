@@ -70,6 +70,7 @@ export interface ExchangeHealthDiagnostics {
   provider: 'binance_futures';
   symbol: string;
   ok: boolean;
+  region?: string;
   checked_at: string;
   checks: ExchangeHealthCheck[];
 }
@@ -203,6 +204,7 @@ export class BinanceFuturesService {
       provider: 'binance_futures',
       symbol,
       ok: checks.every(check => check.ok),
+      region: process.env.VERCEL_REGION,
       checked_at: new Date().toISOString(),
       checks,
     };
