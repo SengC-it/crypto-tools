@@ -9,7 +9,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { Runner } from '../../src/runner/index';
 import type { Timeframe } from '../../src/types';
 
-const SUPPORTED_TIMEFRAMES: Timeframe[] = ['5m', '15m', '1h', '4h', '1d'];
+const SUPPORTED_TIMEFRAMES: Timeframe[] = ['5m', '15m', '1h', '2h', '4h', '1d'];
 
 function parseTimeframe(value: unknown): Timeframe | undefined {
   if (typeof value !== 'string' || value.length === 0) return undefined;

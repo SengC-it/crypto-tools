@@ -6,7 +6,7 @@
 export type Direction = 'long' | 'short' | 'close';
 
 /** 支持的时间框架 */
-export type Timeframe = '5m' | '15m' | '1h' | '4h' | '1d';
+export type Timeframe = '5m' | '15m' | '1h' | '2h' | '4h' | '1d';
 
 /** K线数据结构 */
 export interface Candle {
