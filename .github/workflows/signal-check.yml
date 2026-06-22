@@ -14,6 +14,6 @@ jobs:
     steps:
       - name: Trigger Vercel Cron
         run: |
-          curl -s -f "${{ secrets.VERCEL_CRON_URL }}" || echo "WARN: Cron trigger failed"
+          curl -sS -f "${{ secrets.VERCEL_CRON_URL }}"
         env:
           VERCEL_CRON_URL: ${{ secrets.VERCEL_CRON_URL }}
