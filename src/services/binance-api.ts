@@ -8,7 +8,7 @@
 // - Vercel 部署时无需代理 (海外直连)
 // ============================================
 
-import { setGlobalDispatcher, EnvHttpProxyAgent, ProxyAgent } from 'undici';
+// undici 仅在需要代理时懒加载（Vercel 不需要，避免 node:net 打包失败）
 import type { Candle, MarketContext, Timeframe } from '../types';
 
 // 初始化代理 (本地开发需要，Vercel 不需要)
@@ -22,6 +22,7 @@ function ensureProxy() {
 
   if (proxyUrl) {
     try {
+      const { setGlobalDispatcher, ProxyAgent } = require('undici');
       setGlobalDispatcher(new ProxyAgent({ uri: proxyUrl }));
       console.log(`[Binance] Proxy: ${proxyUrl.replace(/\/\/.*@/, '//***@')}`);
     } catch (err: any) {

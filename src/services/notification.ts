@@ -9,14 +9,8 @@
 import nodemailer from 'nodemailer';
 import type { Signal } from '../types';
 
-// socks-proxy-agent 使用动态 require 避免 moduleResolution 兼容问题
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-let SocksProxyAgent: any;
-try {
-  SocksProxyAgent = require('socks-proxy-agent').SocksProxyAgent;
-} catch {
-  SocksProxyAgent = null;
-}
+// socks-proxy-agent 懒加载，仅在需要代理时引入（Vercel 不需要）
+let SocksProxyAgent: any = null;
 
 /** 从 SMTP_PROXY 或 HTTPS_PROXY 推导 SOCKS5 代理 URL */
 function resolveSmtpProxy(): string | null {
@@ -67,6 +61,11 @@ export class NotificationService {
 
     if (proxyUrl) {
       try {
+        // 懒加载 socks-proxy-agent（仅在有代理时）
+        if (!SocksProxyAgent) {
+          try { SocksProxyAgent = require('socks-proxy-agent').SocksProxyAgent; } catch {}
+        }
+        if (!SocksProxyAgent) throw new Error('socks-proxy-agent not available');
         const agent = new SocksProxyAgent(proxyUrl);
         transportOptions = {
           host: 'smtp.gmail.com',
