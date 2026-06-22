@@ -57,6 +57,18 @@ const FALLBACK_STRATEGY_CONFIGS: StrategyConfig[] = [
   // },
 ];
 
+export interface RunOptions {
+  timeframe?: Timeframe;
+}
+
+export function filterWatchlistByTimeframe(
+  watchlist: WatchlistItem[],
+  timeframe?: Timeframe,
+): WatchlistItem[] {
+  if (!timeframe) return watchlist;
+  return watchlist.filter((item) => item.timeframe === timeframe);
+}
+
 /** 尝试初始化数据库服务, 失败则返回 null (降级模式) */
 function tryInitDatabase(): { db: any; degraded: boolean } {
   try {
@@ -72,7 +84,7 @@ export class Runner {
   /**
    * 执行一次完整的信号检测周期
    */
-  async run(): Promise<RunResult> {
+  async run(options: RunOptions = {}): Promise<RunResult> {
     const startTime = new Date().toISOString();
     const errors: string[] = [];
     let signalsGenerated = 0;
@@ -134,6 +146,15 @@ export class Runner {
 
       if (strategyConfigs.length === 0) {
         errors.push('策略配置为空');
+        return this.buildResult(startTime, 0, 0, errors, []);
+      }
+
+      watchlist = filterWatchlistByTimeframe(watchlist, options.timeframe);
+
+      if (watchlist.length === 0) {
+        errors.push(options.timeframe
+          ? `No enabled watchlist items for timeframe ${options.timeframe}`
+          : '监控列表为空');
         return this.buildResult(startTime, 0, 0, errors, []);
       }
 

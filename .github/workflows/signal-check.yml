@@ -2,18 +2,53 @@ name: Signal Check
 
 on:
   schedule:
-    # Every 4h at :15 past — aligned with 4h candle closes (00/04/08/12/16/20 UTC)
-    # +15min buffer for Binance data to settle
-    # 6 runs/day × 30 = 180 min/month, well within GitHub 2000 min free tier
+    # 15m candles: run 2 minutes after each close.
+    - cron: '2,17,32,47 * * * *'
+    # 1h candles: run 7 minutes after each close.
+    - cron: '7 * * * *'
+    # 4h candles: run 15 minutes after each close.
     - cron: '15 */4 * * *'
   workflow_dispatch:
 
 jobs:
-  check:
+  check-15m:
     runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '2,17,32,47 * * * *'
     steps:
-      - name: Trigger Vercel Cron
+      - name: Trigger Vercel Cron for 15m
         run: |
-          curl -sS -f "${{ secrets.VERCEL_CRON_URL }}"
+          sep='?'
+          case "$VERCEL_CRON_URL" in
+            *\?*) sep='&' ;;
+          esac
+          curl -sS -f "${VERCEL_CRON_URL}${sep}timeframe=15m"
+        env:
+          VERCEL_CRON_URL: ${{ secrets.VERCEL_CRON_URL }}
+
+  check-1h:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '7 * * * *'
+    steps:
+      - name: Trigger Vercel Cron for 1h
+        run: |
+          sep='?'
+          case "$VERCEL_CRON_URL" in
+            *\?*) sep='&' ;;
+          esac
+          curl -sS -f "${VERCEL_CRON_URL}${sep}timeframe=1h"
+        env:
+          VERCEL_CRON_URL: ${{ secrets.VERCEL_CRON_URL }}
+
+  check-4h:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '15 */4 * * *'
+    steps:
+      - name: Trigger Vercel Cron for 4h
+        run: |
+          sep='?'
+          case "$VERCEL_CRON_URL" in
+            *\?*) sep='&' ;;
+          esac
+          curl -sS -f "${VERCEL_CRON_URL}${sep}timeframe=4h"
         env:
           VERCEL_CRON_URL: ${{ secrets.VERCEL_CRON_URL }}
