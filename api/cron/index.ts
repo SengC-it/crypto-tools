@@ -6,7 +6,7 @@
 // ============================================
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { Runner } from '../src/runner/index';
+import { Runner } from '../../src/runner/index';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // 只接受 GET 请求
