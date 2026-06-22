@@ -2,8 +2,10 @@ name: Signal Check
 
 on:
   schedule:
-    # Every 4 hours: 00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC
-    - cron: '0 0,4,8,12,16,20 * * *'
+    # Every 4h at :15 past — aligned with 4h candle closes (00/04/08/12/16/20 UTC)
+    # +15min buffer for Binance data to settle
+    # 6 runs/day × 30 = 180 min/month, well within GitHub 2000 min free tier
+    - cron: '15 */4 * * *'
   workflow_dispatch:
 
 jobs:
